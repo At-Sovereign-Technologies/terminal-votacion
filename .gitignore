@@ -23,8 +23,4 @@ dist-ssr
 *.sln
 *.sw?
 
-# Secretos generados por el Servidor Electoral: NO van en el repo.
-# El operador del puesto los coloca al momento del despliegue.
-# public/deployment.yml y public/terminal-config.json se versionan como
-# placeholders pero se sobreescriben en cada despliegue real.
 *.tsbuildinfo
