@@ -3,9 +3,10 @@
 SPA web para la **Terminal de Votación** (TV) de un puesto electoral, dentro
 del sub-sistema **Sistema Electoral (SE)**.
 
-Es la máquina donde el votante marca su voto. Recibe sesiones autorizadas
-por la Terminal de Jurado del mismo puesto y reporta los votos firmados al
-Nodo de Votación Activa.
+Es la máquina donde el votante marca su voto. Es **cliente puro**: no escucha
+puertos. Mantiene una conexión WebSocket persistente hacia la Terminal de
+Jurado del mismo puesto y por ese canal recibe el handshake y envía el voto
+firmado.
 
 ## Arquitectura
 
@@ -15,22 +16,35 @@ Nodo de Votación Activa.
 └─────────────────────┘
                        ↓
                 ┌─────────────────────┐
-                │   Terminal Voto     │
+                │   Terminal Voto     │  (cliente WebSocket puro)
                 │   (este SPA)        │
                 └──────┬──────────────┘
-                       │ POST /votar (Ed25519 firmado)
-                       │ GET  /puesto (polling revocación)
+                       │ WebSocket persistente
+                       │  ← HANDSHAKE   (jurado autoriza)
+                       │  → VOTO        (firmado Ed25519)
+                       │  ← VOTO_ACEPTADO (con numeroConfirmacion)
                        ↓
             ┌──────────────────────────────┐
-            │ Nodo de Votación Activa      │
-            └──────────────────────────────┘
-
-            ↑ POST /handshake (jurado autoriza sesión)
-        ┌─────────────────────────┐
-        │  Terminal Jurado        │
-        │  del mismo puesto       │
-        └─────────────────────────┘
+            │  Terminal Jurado             │
+            │  (proxy al Nodo +            │
+            │   cola offline)              │
+            └──────────────┬───────────────┘
+                           │ POST /votar (HTTP)
+                           ↓
+                ┌──────────────────────────────┐
+                │ Nodo de Votación Activa      │
+                │ (verifica firma + persiste)  │
+                └──────────────────────────────┘
 ```
+
+La Terminal Voto **nunca habla directo con el Nodo**. Todo va por el Jurado.
+Eso le da al Jurado dos roles importantes:
+
+- **Proxy controlado**: el Jurado puede verificar el `sesionToken` antes de
+  reenviar el voto al Nodo.
+- **Buffer offline**: si el Nodo está caído, el Jurado guarda el voto en
+  cola local y reintenta. La Terminal Voto recibe un número de confirmación
+  provisional y el votante puede irse tranquilo.
 
 ## Stack
 
@@ -38,143 +52,107 @@ Nodo de Votación Activa.
 - Tailwind CSS 3
 - `@noble/ed25519` para firma Ed25519 del voto
 - `yaml` para parsear `deployment.yml`
-- `axios` para HTTP al Nodo
-- Sidecar: Node + Express + ws + tsx
+- Cliente WebSocket nativo del navegador (sin librería)
+
+No tiene sidecar Node. Es solo el SPA en browser.
 
 ## Configuración
 
-La terminal no pide nada al arrancar. Toda su configuración viene de dos
-archivos en `public/` que el Servidor Electoral genera antes de la jornada:
+Dos archivos en `public/` generados por el Servidor Electoral antes de la
+jornada.
 
 ### `public/deployment.yml`
 Toda la elección: candidatos, puntos, terminales con su clave pública,
-votantes asignados a cada terminal. Mismo archivo en todas las terminales del
-puesto.
+votantes asignados a cada terminal.
 
 ### `public/terminal-config.json`
-Específico de esta terminal: id, JWT bearer, clave privada Ed25519, URL del
-Nodo y URL del Jurado.
+Específico de esta terminal: id, JWT bearer, clave privada Ed25519 y URL
+del Jurado.
 
 ```json
 {
     "id": 1,
     "secreto": "<jwt-bearer-de-esta-terminal>",
     "clavePrivada": "<ed25519-hex-o-base64>",
-    "clusterUrl": "http://nodo-votacion.local:8080",
     "parentUrl": "http://terminal-jurado.local:8089"
 }
 ```
 
-## Desarrollo local
+El `parentUrl` puede empezar con `http://` o `ws://`; el cliente lo convierte
+automáticamente a WebSocket.
 
-### Opción A — SPA + sidecar (recomendado)
+## Desarrollo local
 
 ```bash
 npm install
-npm run dev:all
-```
-
-- **Vite** en `http://localhost:5173` — SPA del votante.
-- **Sidecar** en `http://localhost:8090` (HTTP) + `ws://localhost:8091` (WS).
-
-El sidecar simula el transporte HTTP local que en producción tendrá la
-Terminal de Jurado para empujar handshakes. El SPA escucha el WebSocket y
-recibe los handshakes en tiempo real.
-
-#### Probar el flujo end-to-end
-
-```bash
-curl -X POST http://localhost:8090/handshake \
-  -H "Content-Type: application/json" \
-  -d '{"votanteId":101,"sesionToken":"fake-jwt-dev"}'
-```
-
-El SPA salta inmediatamente de "Terminal en espera" a la pantalla del
-tarjetón.
-
-### Opción B — Solo SPA (sin sidecar)
-
-```bash
 npm run dev
 ```
 
-Inyecta un handshake vía query string:
+Vite arranca en `http://localhost:5173`. La terminal intentará conectarse al
+Jurado configurado en `terminal-config.json` (por defecto `localhost:8089`).
+Necesitas tener `terminal-jurado` corriendo en paralelo para que el flujo
+funcione.
 
-```bash
-node -e "console.log(encodeURIComponent(btoa(JSON.stringify({votanteId:101,sesionToken:'fake-jwt'}))))"
-```
+### Probar flujo end-to-end
 
-Y abre `http://localhost:5173/?handshake=<resultado>`.
+Necesitas las dos terminales corriendo:
 
-### Sobre el sidecar
+1. **terminal-jurado** (repo aparte): `npm run dev:all` → Vite 5180 + sidecar 8089.
+2. **terminal-votacion** (este repo): `npm run dev` → Vite 5173.
 
-`sidecar/handshakeSidecar.ts` es Node + Express + ws. Cumple el rol que en
-producción tendría un launcher nativo (Electron, Tauri o un binario
-empaquetado junto al SPA). Su contrato hacia el SPA es estable:
-
-- `POST http://localhost:8090/handshake` con `{ votanteId, sesionToken }`.
-- `ws://localhost:8091` emite `{ tipo: "HANDSHAKE", votanteId, sesionToken }`.
-
-Cualquier implementación de transporte que respete ese contrato es reemplazo
-válido. La interfaz `subscribirseAHandshakes()` del SPA no necesita cambiar.
+Abre las dos en el navegador. En el Jurado, autoriza a un votante asignado
+a tu terminal → la Voto cambia inmediatamente de "espera" a tarjetón.
 
 ## Flujo en vivo
 
-1. **Arranque** — carga deployment + config, valida `terminal.activo` y
-   `punto.activo`. Si alguno es `false`, la terminal queda bloqueada.
-2. **Espera** — pantalla "Terminal en espera".
-3. **Handshake** — el Jurado autoriza una sesión enviando
-   `{ votanteId, sesionToken }`.
-4. **Tarjetón** — muestra candidatos del `deployment.yml`. Soporta:
+1. **Arranque** — carga deployment + config, valida flags `activo`. Abre
+   WebSocket persistente al Jurado.
+2. **Espera** — pantalla "Terminal en espera". En el footer se muestra el
+   estado de la conexión con el Jurado (conectando / abierto / cerrado).
+3. **Handshake** — llega por el WebSocket con `{votanteId, sesionToken}`.
+4. **Tarjetón** — muestra candidatos. Soporta:
    - Voto simple (un candidato o voto en blanco).
-   - **Voto Alternativo ME-04**: toggle activa modo ranking; tocar
-     candidatos en orden les asigna preferencia 1°, 2°, 3°, etc. Re-tocar
-     quita la marca y reajusta numeración. Por construcción nunca hay
-     valores repetidos.
+   - **Voto Alternativo ME-04**: toggle activa ranking; tocar candidatos
+     en orden les asigna preferencia 1°, 2°, 3°, etc.
 5. **Confirmación** — pantalla obligatoria de revisión.
 6. **Firma + envío** — `firmarVoto()` crea firma Ed25519 con serialización
-   canónica y se envía a `POST /votar`.
-7. **Comprobante** — número de confirmación al votante y notificación al
-   Jurado vía `parent_url`.
-8. **Auto-reset** a los 30 s → vuelve a "espera".
+   canónica. El SPA envía `{tipo: "VOTO", payload: {voto, firma}}` por el
+   WebSocket al Jurado.
+7. **Respuesta** — el Jurado responde `VOTO_ACEPTADO` con número de
+   confirmación, o `VOTO_RECHAZADO` con motivo.
+8. **Comprobante** — muestra el número de confirmación. **Auto-reset a los
+   30 s** → vuelve a "espera".
 
-## Revocación en caliente
+## Reconexión automática
 
-Cada 30 segundos el SPA llama a `GET /puesto` del Nodo. Si el Servidor
-Electoral marcó esta terminal o este punto como inactivos durante la
-jornada (por compromiso de seguridad, evidencia de fraude, etc.), la
-terminal pasa a pantalla bloqueada sin necesidad de reinicio.
-
-Caídas temporales del Nodo (timeout, 503) no disparan revocación: solo se
-loguean. La revocación requiere respuesta 200 explícita con `activo: false`.
+Si el WebSocket cae (red intermitente, reinicio del Jurado), el cliente
+reintenta cada 2 segundos. Mientras está cerrado, la terminal **no acepta
+votos**: si el votante intenta confirmar, recibe "No hay conexión con el
+Jurado, espere".
 
 ## Atributos de calidad
 
-- **Privacidad** — el voto se firma localmente; el SPA solo envía firma +
-  payload del voto al Nodo, nunca expone la clave privada.
+- **Privacidad** — la clave privada Ed25519 nunca sale del cliente; solo
+  se publica la clave pública en el `deployment.yml`.
 - **Integridad** — firma Ed25519 sobre serialización canónica de
   `{terminal, votante, candidato, preferencias?}`. El Nodo verifica con la
-  `clavePublica` del deployment. Cualquier alteración invalida la firma.
-- **No repudio** — la firma vincula el voto a la terminal específica que la
-  generó.
-- **Control de fraude** — flag `activo` chequeado al arrancar y refrescado
-  por polling cada 30s. Una terminal revocada deja de aceptar sesiones.
-- **Trazabilidad** — cada voto registrado en el Nodo lleva `terminal`,
-  `votante` y firma, suficiente para auditoría posterior.
+  `clavePublica`. Cualquier alteración del voto invalida la firma.
+- **No repudio** — la firma vincula el voto a la terminal que lo generó.
+- **Control de fraude** — flag `activo` chequeado al arrancar. El Jurado
+  puede rechazar votos de terminales que considera comprometidas.
+- **Resiliencia** — reconexión automática del WebSocket. El votante no
+  puede emitir si no hay conexión con el Jurado, pero la conexión se
+  recupera sola en cuanto el Jurado vuelva.
 
 ## Pendientes
 
-- **Endpoint local `POST /handshake` empaquetado.** Hoy es un sidecar Node
-  en dev. Para producción se decide entre Electron, Tauri o un launcher
-  nativo. Decisión pendiente del equipo.
-- **Verificación del `sesionToken` JWT.** Hoy se acepta cualquier token no
-  vacío. Cuando el formato del JWT del jurado quede definido, validar firma
-  + expiración antes de mostrar tarjetón.
-- **Integración con VoteVault del compute-engine.** Hoy el voto viaja en
-  claro al Nodo (es éste quien custodia). Si se decide cifrado adicional
-  con el VoteVault, la terminal cifrará antes de enviar.
+- **Verificación del `sesionToken` JWT.** Hoy el SPA acepta cualquier
+  token no vacío. Cuando el formato del JWT del jurado quede definido, se
+  valida firma + expiración antes de mostrar tarjetón.
+- **Polling de revocación al Jurado.** Si el Servidor Electoral revoca
+  esta terminal a mitad de jornada, el Jurado debería notificarlo por
+  WebSocket. Hoy solo se valida al arrancar.
 - **Pruebas unitarias.** Sin tests todavía. Pendiente cobertura de:
-  - firma Ed25519 (round-trip con keys conocidas).
-  - serialización canónica (ranking ordenado independiente del insert order).
-  - sidecar (curl + recepción WebSocket).
-  - hook de polling con timers fake.
+  - Firma Ed25519 (round-trip con keys conocidas).
+  - Serialización canónica (ranking ordenado independiente del insert order).
+  - Cliente WebSocket con mock server (reconexión, timeout de voto).

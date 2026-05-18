@@ -1,6 +1,7 @@
-// Contrato con POST /votar del Nodo de Votación Activa.
-// La estructura `voto` es lo que viaja en claro y lo que se firma.
-// La firma Ed25519 se calcula sobre la serialización canónica de `voto`.
+// Contrato del voto que viaja por WebSocket entre Terminal Voto y Terminal Jurado.
+// La estructura `voto` es lo que se firma con Ed25519; el Nodo (al que el
+// Jurado le reenvía el voto) verifica la firma usando la clavePublica
+// del deployment.yml.
 
 export interface VotoPayload {
     terminal: number;
@@ -17,16 +18,21 @@ export interface VotoFirmado {
     firma: string; // Ed25519 en hex
 }
 
-export interface RespuestaVotanteIdentidad {
-    votado: boolean;
-}
-
-// Lo que la Terminal de Jurado envía al endpoint local /handshake de
-// la Terminal de Votación cuando autoriza una sesión.
-//
-// `sesionToken` es un JWT firmado por el secreto del Jurado que la
-// Terminal de Voto puede verificar antes de mostrar el tarjetón.
+// Lo que la Terminal de Jurado envía a la Terminal de Votación cuando
+// autoriza una sesión. Llega por el mismo WebSocket que la Voto mantiene
+// abierto al Jurado.
 export interface HandshakePayload {
     votanteId: number;
     sesionToken: string;
 }
+
+// Mensajes del WebSocket Voto ↔ Jurado.
+export type MensajeJurado =
+    | { tipo: "WELCOME"; mensaje?: string }
+    | ({ tipo: "HANDSHAKE" } & HandshakePayload)
+    | { tipo: "VOTO_ACEPTADO"; numeroConfirmacion: string }
+    | { tipo: "VOTO_RECHAZADO"; motivo: string };
+
+export type MensajeVoto =
+    | { tipo: "HELLO"; terminalId: number; secreto: string }
+    | { tipo: "VOTO"; payload: VotoFirmado };

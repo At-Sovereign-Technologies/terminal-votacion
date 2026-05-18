@@ -64,10 +64,13 @@ export interface Deployment {
 }
 
 // Config local de la propia terminal (deploy individual por máquina).
+// La Terminal de Voto NO habla con el Nodo directamente: toda comunicación
+// con el exterior pasa por la Terminal de Jurado del mismo punto vía
+// WebSocket. El Jurado actúa como proxy hacia el Nodo y como buffer en
+// caso de desconexión del Nodo.
 export interface TerminalConfig {
     id: number;
-    secreto: string; // JWT bearer
+    secreto: string; // JWT bearer para identificarse ante el Jurado.
     clavePrivada: string; // Ed25519, hex o base64. Nunca se serializa hacia afuera.
-    clusterUrl: string; // URL del Nodo de Votación Activa
-    parentUrl: string; // URL de la Terminal de Jurado del mismo punto
+    parentUrl: string; // URL del Jurado (acepta http://host:port o ws://host:port).
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
     AlertTriangle,
     CheckCircle2,
@@ -9,8 +9,8 @@ import {
     ShieldCheck,
 } from "lucide-react";
 import { useContextoListo } from "../config/TerminalContext";
-import { crearNodoClient, decodificarHandshakeDeQuery } from "../api/nodo.api";
-import { subscribirseAHandshakes } from "../api/sidecarClient";
+import { crearJuradoClient } from "../api/juradoClient";
+import type { EstadoConexion, JuradoClient } from "../api/juradoClient";
 import { firmarVoto } from "../crypto/firmaVoto";
 import type { DeploymentCandidato, DeploymentVotante } from "../types/deployment";
 import type { HandshakePayload, VotoPayload } from "../types/voto";
@@ -45,16 +45,6 @@ type Fase =
 
 const BLANCO_LABEL = "Voto en Blanco";
 
-function numeroAprox() {
-    const grupo = () =>
-        Array.from({ length: 4 }, () =>
-            "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".charAt(
-                Math.floor(Math.random() * 32)
-            )
-        ).join("");
-    return `VC-${new Date().getFullYear()}-${grupo()}-${grupo()}`;
-}
-
 function labelSeleccion(s: Seleccion, candidatos: DeploymentCandidato[]): string {
     if (s.tipo === "blanco") return BLANCO_LABEL;
     if (s.tipo === "candidato") return s.candidato.nombre;
@@ -70,48 +60,52 @@ function labelSeleccion(s: Seleccion, candidatos: DeploymentCandidato[]): string
 export default function VotacionApp() {
     const { deployment, config, terminal } = useContextoListo();
     const [fase, setFase] = useState<Fase>({ kind: "esperando" });
+    const [estadoConexion, setEstadoConexion] =
+        useState<EstadoConexion>("conectando");
+    const clienteRef = useRef<JuradoClient | null>(null);
 
-    const nodo = useMemo(
-        () =>
-            crearNodoClient({
-                clusterUrl: config.clusterUrl,
-                secreto: config.secreto,
-            }),
-        [config]
-    );
-
-    const procesarHandshake = (h: HandshakePayload) => {
-        if (fase.kind !== "esperando") return;
-        const votante = terminal.votantes.find((v) => v.id === h.votanteId);
-        if (!votante) {
-            setFase({
-                kind: "error",
-                mensaje:
-                    "El handshake hace referencia a un votante que no está asignado a esta terminal.",
-            });
-            return;
-        }
-        setFase({ kind: "seleccion", handshake: h, votante });
-    };
+    // Mantenemos una referencia siempre actual al estado de la fase para
+    // que el callback del WebSocket no use un closure obsoleto.
+    const faseRef = useRef(fase);
+    faseRef.current = fase;
 
     useEffect(() => {
-        if (fase.kind !== "esperando") return;
-        const url = new URL(window.location.href);
-        const h = decodificarHandshakeDeQuery(url.searchParams.get("handshake"));
-        if (!h) return;
-        procesarHandshake(h);
-        url.searchParams.delete("handshake");
-        window.history.replaceState({}, "", url.toString());
+        const cliente = crearJuradoClient({
+            parentUrl: config.parentUrl,
+            terminalId: terminal.id,
+            secreto: config.secreto,
+            onCambioEstado: setEstadoConexion,
+            onHandshake: (h) => {
+                if (faseRef.current.kind !== "esperando") {
+                    // Ignorar handshakes que llegan cuando ya hay sesión activa.
+                    return;
+                }
+                const votante = terminal.votantes.find(
+                    (v) => v.id === h.votanteId
+                );
+                if (!votante) {
+                    setFase({
+                        kind: "error",
+                        mensaje:
+                            "El handshake hace referencia a un votante que no está asignado a esta terminal.",
+                    });
+                    return;
+                }
+                setFase({ kind: "seleccion", handshake: h, votante });
+            },
+        });
+        clienteRef.current = cliente;
+        return () => {
+            cliente.cerrar();
+            clienteRef.current = null;
+        };
+        // Solo nos volvemos a conectar si cambia la config (no debería pasar
+        // en runtime). El callback usa faseRef para mantenerse actual.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [fase.kind, terminal.votantes]);
+    }, [config.parentUrl, config.secreto, terminal.id]);
 
-    useEffect(() => {
-        const sub = subscribirseAHandshakes((h) => procesarHandshake(h));
-        return () => sub.cerrar();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [fase.kind, terminal.votantes]);
-
-    if (fase.kind === "esperando") return <PantallaEsperando />;
+    if (fase.kind === "esperando")
+        return <PantallaEsperando estadoConexion={estadoConexion} />;
     if (fase.kind === "error")
         return (
             <PantallaError
@@ -145,6 +139,14 @@ export default function VotacionApp() {
                 votante: fase.votante,
                 seleccion: fase.seleccion,
             });
+            const cliente = clienteRef.current;
+            if (!cliente) {
+                setFase({
+                    kind: "error",
+                    mensaje: "Cliente WebSocket no disponible.",
+                });
+                return;
+            }
             try {
                 const payload: VotoPayload = construirPayload(
                     terminal.id,
@@ -152,19 +154,24 @@ export default function VotacionApp() {
                     fase.seleccion
                 );
                 const firma = await firmarVoto(payload, config.clavePrivada);
-                await nodo.emitirVoto({ voto: payload, firma });
-                nodo.notificarJurado(config.parentUrl, {
-                    tipo: "VOTO_EMITIDO",
-                    terminalId: terminal.id,
-                    votanteId: fase.votante.id,
-                }).catch(() => {
-                    /* no bloqueamos al votante */
-                });
-                setFase({
-                    kind: "comprobante",
-                    numero: numeroAprox(),
-                    seleccion: fase.seleccion,
-                });
+
+                // El voto viaja por el WebSocket al Jurado. El Jurado lo
+                // proxea al Nodo (o lo encola localmente si el Nodo está
+                // caído) y responde con VOTO_ACEPTADO o VOTO_RECHAZADO.
+                const r = await cliente.enviarVoto({ voto: payload, firma });
+
+                if (r.ok) {
+                    setFase({
+                        kind: "comprobante",
+                        numero: r.numeroConfirmacion,
+                        seleccion: fase.seleccion,
+                    });
+                } else {
+                    setFase({
+                        kind: "error",
+                        mensaje: r.motivo,
+                    });
+                }
             } catch (e) {
                 setFase({
                     kind: "error",
@@ -231,7 +238,11 @@ function construirPayload(
 
 // ─── Pantallas ──────────────────────────────────────────────────────────────
 
-function PantallaEsperando() {
+function PantallaEsperando({
+    estadoConexion,
+}: {
+    estadoConexion: EstadoConexion;
+}) {
     return (
         <main className="min-h-screen flex flex-col items-center justify-center p-12 text-center bg-white">
             <div className="w-24 h-24 rounded-full bg-red-100 flex items-center justify-center mb-6">
@@ -245,6 +256,20 @@ function PantallaEsperando() {
                 quedará habilitada en cuanto el jurado autorice la sesión.
             </p>
             <Loader2 size={32} className="text-gray-400 animate-spin mt-10" />
+            <p className="mt-6 text-xs text-gray-400 uppercase tracking-wider">
+                Conexión con Jurado:{" "}
+                <span
+                    className={
+                        estadoConexion === "abierto"
+                            ? "text-green-600 font-bold"
+                            : estadoConexion === "conectando"
+                              ? "text-amber-600 font-bold"
+                              : "text-red-600 font-bold"
+                    }
+                >
+                    {estadoConexion}
+                </span>
+            </p>
         </main>
     );
 }

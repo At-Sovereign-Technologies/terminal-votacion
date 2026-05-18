@@ -73,9 +73,9 @@ export async function cargarContextoTerminal(): Promise<ContextoTerminal> {
     }
 
     // Validaciones mínimas.
-    if (!config.id || !config.secreto || !config.clavePrivada || !config.clusterUrl) {
+    if (!config.id || !config.secreto || !config.clavePrivada || !config.parentUrl) {
         throw new ErrorConfiguracion(
-            "terminal-config.json incompleto: faltan id, secreto, clavePrivada o clusterUrl."
+            "terminal-config.json incompleto: faltan id, secreto, clavePrivada o parentUrl."
         );
     }
     if (!deployment.puntos?.length) {

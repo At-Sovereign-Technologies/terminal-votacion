@@ -2,6 +2,5 @@
     "id": 1,
     "secreto": "PEGAR-AQUI-EL-JWT-DE-ESTA-TERMINAL",
     "clavePrivada": "PEGAR-AQUI-LA-CLAVE-ED25519-EN-HEX-O-BASE64",
-    "clusterUrl": "http://localhost:8080",
-    "parentUrl": "http://terminal-jurado.local:8090"
+    "parentUrl": "http://localhost:8089"
 }
