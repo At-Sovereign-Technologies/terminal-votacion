@@ -5,7 +5,11 @@
 export interface VotoPayload {
     terminal: number;
     votante: number;
+    // Voto simple (mayoría) → un único candidato.
+    // Voto alternativo (ME-04) → candidato = 0 y `preferencias` lleva el ranking.
+    // Voto en blanco → candidato = 0 y `preferencias` vacío.
     candidato: number;
+    preferencias?: Record<string, number>;
 }
 
 export interface VotoFirmado {

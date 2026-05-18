@@ -3,7 +3,9 @@ import {
     AlertTriangle,
     CheckCircle2,
     ChevronRight,
+    ListOrdered,
     Loader2,
+    RotateCcw,
     ShieldCheck,
 } from "lucide-react";
 import { useContextoListo } from "../config/TerminalContext";
@@ -13,6 +15,12 @@ import { firmarVoto } from "../crypto/firmaVoto";
 import type { DeploymentCandidato, DeploymentVotante } from "../types/deployment";
 import type { HandshakePayload, VotoPayload } from "../types/voto";
 
+// Una selección puede ser candidato único, voto en blanco, o ranking alternativo.
+type Seleccion =
+    | { tipo: "candidato"; candidato: DeploymentCandidato }
+    | { tipo: "blanco" }
+    | { tipo: "ranking"; ranking: Record<string, number> };
+
 type Fase =
     | { kind: "esperando" }
     | { kind: "seleccion"; handshake: HandshakePayload; votante: DeploymentVotante }
@@ -20,18 +28,18 @@ type Fase =
           kind: "confirmacion";
           handshake: HandshakePayload;
           votante: DeploymentVotante;
-          candidato: DeploymentCandidato | null; // null = voto en blanco
+          seleccion: Seleccion;
       }
     | {
           kind: "enviando";
           handshake: HandshakePayload;
           votante: DeploymentVotante;
-          candidato: DeploymentCandidato | null;
+          seleccion: Seleccion;
       }
     | {
           kind: "comprobante";
           numero: string;
-          candidato: DeploymentCandidato | null;
+          seleccion: Seleccion;
       }
     | { kind: "error"; mensaje: string };
 
@@ -47,6 +55,18 @@ function numeroAprox() {
     return `VC-${new Date().getFullYear()}-${grupo()}-${grupo()}`;
 }
 
+function labelSeleccion(s: Seleccion, candidatos: DeploymentCandidato[]): string {
+    if (s.tipo === "blanco") return BLANCO_LABEL;
+    if (s.tipo === "candidato") return s.candidato.nombre;
+    const orden = Object.entries(s.ranking).sort((a, b) => a[1] - b[1]);
+    return orden
+        .map(([id, n]) => {
+            const c = candidatos.find((x) => String(x.id) === id);
+            return `${n}° ${c?.nombre ?? id}`;
+        })
+        .join(" · ");
+}
+
 export default function VotacionApp() {
     const { deployment, config, terminal } = useContextoListo();
     const [fase, setFase] = useState<Fase>({ kind: "esperando" });
@@ -60,13 +80,8 @@ export default function VotacionApp() {
         [config]
     );
 
-    // Procesa un handshake entrante. Aplica tanto al modo legacy
-    // (query string ?handshake=...) como al sidecar (WebSocket).
     const procesarHandshake = (h: HandshakePayload) => {
-        if (fase.kind !== "esperando") {
-            // Ya hay sesión activa; ignoramos handshakes adicionales.
-            return;
-        }
+        if (fase.kind !== "esperando") return;
         const votante = terminal.votantes.find((v) => v.id === h.votanteId);
         if (!votante) {
             setFase({
@@ -79,7 +94,6 @@ export default function VotacionApp() {
         setFase({ kind: "seleccion", handshake: h, votante });
     };
 
-    // 1) Handshake desde query string al arrancar (modo dev legacy).
     useEffect(() => {
         if (fase.kind !== "esperando") return;
         const url = new URL(window.location.href);
@@ -91,39 +105,32 @@ export default function VotacionApp() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [fase.kind, terminal.votantes]);
 
-    // 2) Sidecar HTTP local + WebSocket (transporte de dev y futuro empaque
-    //    Electron/Tauri). El SPA escucha eventos HANDSHAKE difundidos por
-    //    el sidecar cuando llega un POST /handshake en :8090.
     useEffect(() => {
         const sub = subscribirseAHandshakes((h) => procesarHandshake(h));
         return () => sub.cerrar();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [fase.kind, terminal.votantes]);
 
-    if (fase.kind === "esperando") {
-        return <PantallaEsperando />;
-    }
-
-    if (fase.kind === "error") {
+    if (fase.kind === "esperando") return <PantallaEsperando />;
+    if (fase.kind === "error")
         return (
             <PantallaError
                 mensaje={fase.mensaje}
                 onReintentar={() => setFase({ kind: "esperando" })}
             />
         );
-    }
 
     if (fase.kind === "seleccion") {
         return (
             <PantallaSeleccion
                 candidatos={deployment.candidatos}
                 votante={fase.votante}
-                onSeleccion={(candidato) =>
+                onSeleccion={(seleccion) =>
                     setFase({
                         kind: "confirmacion",
                         handshake: fase.handshake,
                         votante: fase.votante,
-                        candidato,
+                        seleccion,
                     })
                 }
             />
@@ -136,31 +143,27 @@ export default function VotacionApp() {
                 kind: "enviando",
                 handshake: fase.handshake,
                 votante: fase.votante,
-                candidato: fase.candidato,
+                seleccion: fase.seleccion,
             });
-
             try {
-                const payload: VotoPayload = {
-                    terminal: terminal.id,
-                    votante: fase.votante.id,
-                    candidato: fase.candidato?.id ?? 0, // 0 = blanco
-                };
+                const payload: VotoPayload = construirPayload(
+                    terminal.id,
+                    fase.votante.id,
+                    fase.seleccion
+                );
                 const firma = await firmarVoto(payload, config.clavePrivada);
                 await nodo.emitirVoto({ voto: payload, firma });
-
-                // Notificar al jurado sin bloquear la UX si falla.
                 nodo.notificarJurado(config.parentUrl, {
                     tipo: "VOTO_EMITIDO",
                     terminalId: terminal.id,
                     votanteId: fase.votante.id,
                 }).catch(() => {
-                    /* el jurado se entera por otra vía; no bloqueamos al votante */
+                    /* no bloqueamos al votante */
                 });
-
                 setFase({
                     kind: "comprobante",
                     numero: numeroAprox(),
-                    candidato: fase.candidato,
+                    seleccion: fase.seleccion,
                 });
             } catch (e) {
                 setFase({
@@ -175,8 +178,9 @@ export default function VotacionApp() {
 
         return (
             <PantallaConfirmacion
-                candidato={fase.candidato}
+                seleccion={fase.seleccion}
                 votante={fase.votante}
+                candidatos={deployment.candidatos}
                 onCancelar={() =>
                     setFase({
                         kind: "seleccion",
@@ -189,21 +193,40 @@ export default function VotacionApp() {
         );
     }
 
-    if (fase.kind === "enviando") {
-        return <PantallaEnviando />;
-    }
+    if (fase.kind === "enviando") return <PantallaEnviando />;
 
     if (fase.kind === "comprobante") {
         return (
             <PantallaComprobante
                 numero={fase.numero}
-                candidato={fase.candidato}
+                seleccion={fase.seleccion}
+                candidatos={deployment.candidatos}
                 onTerminar={() => setFase({ kind: "esperando" })}
             />
         );
     }
 
     return null;
+}
+
+// Construye el VotoPayload que se firma y envía al Nodo.
+function construirPayload(
+    terminalId: number,
+    votanteId: number,
+    s: Seleccion
+): VotoPayload {
+    if (s.tipo === "candidato") {
+        return { terminal: terminalId, votante: votanteId, candidato: s.candidato.id };
+    }
+    if (s.tipo === "blanco") {
+        return { terminal: terminalId, votante: votanteId, candidato: 0 };
+    }
+    return {
+        terminal: terminalId,
+        votante: votanteId,
+        candidato: 0,
+        preferencias: s.ranking,
+    };
 }
 
 // ─── Pantallas ──────────────────────────────────────────────────────────────
@@ -221,10 +244,7 @@ function PantallaEsperando() {
                 Acérquese al jurado para identificar al votante. La terminal
                 quedará habilitada en cuanto el jurado autorice la sesión.
             </p>
-            <Loader2
-                size={32}
-                className="text-gray-400 animate-spin mt-10"
-            />
+            <Loader2 size={32} className="text-gray-400 animate-spin mt-10" />
         </main>
     );
 }
@@ -262,9 +282,57 @@ function PantallaSeleccion({
 }: {
     candidatos: DeploymentCandidato[];
     votante: DeploymentVotante;
-    onSeleccion: (candidato: DeploymentCandidato | null) => void;
+    onSeleccion: (s: Seleccion) => void;
 }) {
+    // Modo simple: un candidato O voto en blanco.
     const [marcado, setMarcado] = useState<number | "blank" | null>(null);
+    // Modo alternativo (ME-04): mapa candidatoId -> preferencia (1..N).
+    const [modoAlternativo, setModoAlternativo] = useState(false);
+    const [ranking, setRanking] = useState<Record<string, number>>({});
+
+    const candidatosRankeados = Object.keys(ranking).length;
+
+    const toggleRanking = (candidatoId: string) => {
+        setRanking((prev) => {
+            if (prev[candidatoId]) {
+                // Quitar y reajustar numeración.
+                const eliminado = prev[candidatoId];
+                const nuevo: Record<string, number> = {};
+                for (const [k, v] of Object.entries(prev)) {
+                    if (k === candidatoId) continue;
+                    nuevo[k] = v > eliminado ? v - 1 : v;
+                }
+                return nuevo;
+            }
+            return { ...prev, [candidatoId]: Object.keys(prev).length + 1 };
+        });
+    };
+
+    const cambiarModo = (alternativo: boolean) => {
+        setModoAlternativo(alternativo);
+        setMarcado(null);
+        setRanking({});
+    };
+
+    const handleRevisar = () => {
+        if (modoAlternativo) {
+            if (candidatosRankeados === 0) return;
+            onSeleccion({ tipo: "ranking", ranking });
+            return;
+        }
+        if (marcado === "blank") {
+            onSeleccion({ tipo: "blanco" });
+            return;
+        }
+        if (typeof marcado === "number") {
+            const c = candidatos.find((x) => x.id === marcado);
+            if (c) onSeleccion({ tipo: "candidato", candidato: c });
+        }
+    };
+
+    const puedeAvanzar = modoAlternativo
+        ? candidatosRankeados > 0
+        : marcado !== null;
 
     return (
         <main className="min-h-screen flex flex-col bg-gray-50">
@@ -278,72 +346,128 @@ function PantallaSeleccion({
                 </p>
             </header>
 
-            <section className="flex-1 px-10 py-8 overflow-y-auto">
-                <div className="grid grid-cols-2 lg:grid-cols-3 gap-6 max-w-6xl mx-auto">
-                    {candidatos.map((c) => {
-                        const sel = marcado === c.id;
-                        return (
+            <section className="flex-1 px-10 py-6 overflow-y-auto">
+                <div className="max-w-6xl mx-auto">
+                    <div className="bg-white border rounded-2xl px-5 py-4 mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                        <div className="flex items-start gap-3">
+                            <div className="w-9 h-9 rounded-full bg-red-50 flex items-center justify-center shrink-0">
+                                <ListOrdered size={16} className="text-red-500" />
+                            </div>
+                            <div>
+                                <p className="font-bold text-sm">
+                                    {modoAlternativo
+                                        ? "Voto Alternativo activo (ME-04)"
+                                        : "Voto único"}
+                                </p>
+                                <p className="text-xs text-gray-500">
+                                    {modoAlternativo
+                                        ? "Toque candidatos en orden de preferencia (1°, 2°, 3°…). Re-tocar quita la marca."
+                                        : "Seleccione un único candidato o el voto en blanco."}
+                                </p>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                            {modoAlternativo && candidatosRankeados > 0 && (
+                                <button
+                                    onClick={() => setRanking({})}
+                                    className="flex items-center gap-1 border rounded-lg px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+                                >
+                                    <RotateCcw size={12} /> Limpiar
+                                </button>
+                            )}
                             <button
-                                key={c.id}
-                                onClick={() => setMarcado(c.id)}
-                                className={`relative text-left rounded-2xl border-4 p-5 transition ${
-                                    sel
-                                        ? "border-red-500 bg-red-50 shadow-lg"
-                                        : "border-gray-200 bg-white hover:border-gray-400"
+                                onClick={() => cambiarModo(!modoAlternativo)}
+                                className={`text-xs font-bold uppercase tracking-wide px-4 py-2 rounded-lg ${
+                                    modoAlternativo
+                                        ? "bg-gray-800 text-white hover:bg-gray-900"
+                                        : "bg-red-500 text-white hover:bg-red-600"
                                 }`}
                             >
-                                <div className="aspect-[4/5] bg-gray-100 rounded-xl mb-3 overflow-hidden">
-                                    {c.fotoUrl ? (
-                                        <img
-                                            src={c.fotoUrl}
-                                            alt={c.nombre}
-                                            className="w-full h-full object-cover"
-                                        />
-                                    ) : null}
-                                </div>
-                                <p className="font-extrabold text-lg uppercase">
-                                    {c.nombre}
-                                </p>
-                                <p className="text-sm text-red-500 font-bold uppercase">
-                                    {c.partido}
-                                </p>
-                                {sel && (
-                                    <span className="absolute top-3 right-3 bg-red-500 text-white text-xs font-extrabold px-3 py-1 rounded-full">
-                                        SELECCIONADO
-                                    </span>
-                                )}
+                                {modoAlternativo
+                                    ? "Volver a voto único"
+                                    : "Activar voto alternativo"}
                             </button>
-                        );
-                    })}
+                        </div>
+                    </div>
 
-                    <button
-                        onClick={() => setMarcado("blank")}
-                        className={`flex flex-col items-center justify-center rounded-2xl border-4 border-dashed p-8 min-h-[300px] transition ${
-                            marcado === "blank"
-                                ? "border-red-500 bg-red-50"
-                                : "border-gray-300 bg-white hover:border-gray-400"
-                        }`}
-                    >
-                        <p className="font-extrabold text-lg uppercase text-gray-800">
-                            Voto en Blanco
-                        </p>
-                        <p className="text-sm text-gray-500 mt-2">
-                            Si no desea votar por ningún candidato
-                        </p>
-                    </button>
+                    <div className="grid grid-cols-2 lg:grid-cols-3 gap-6">
+                        {candidatos.map((c) => {
+                            const rank = modoAlternativo
+                                ? ranking[String(c.id)]
+                                : undefined;
+                            const sel = modoAlternativo
+                                ? !!rank
+                                : marcado === c.id;
+                            return (
+                                <button
+                                    key={c.id}
+                                    onClick={() =>
+                                        modoAlternativo
+                                            ? toggleRanking(String(c.id))
+                                            : setMarcado(c.id)
+                                    }
+                                    className={`relative text-left rounded-2xl border-4 p-5 transition ${
+                                        sel
+                                            ? "border-red-500 bg-red-50 shadow-lg"
+                                            : "border-gray-200 bg-white hover:border-gray-400"
+                                    }`}
+                                >
+                                    <div className="aspect-[4/5] bg-gray-100 rounded-xl mb-3 overflow-hidden">
+                                        {c.fotoUrl ? (
+                                            <img
+                                                src={c.fotoUrl}
+                                                alt={c.nombre}
+                                                className="w-full h-full object-cover"
+                                            />
+                                        ) : null}
+                                    </div>
+                                    <p className="font-extrabold text-lg uppercase">
+                                        {c.nombre}
+                                    </p>
+                                    <p className="text-sm text-red-500 font-bold uppercase">
+                                        {c.partido}
+                                    </p>
+                                    {sel && (
+                                        <span className="absolute top-3 right-3 bg-red-500 text-white text-sm font-extrabold w-9 h-9 rounded-full flex items-center justify-center">
+                                            {rank ?? "✓"}
+                                        </span>
+                                    )}
+                                </button>
+                            );
+                        })}
+
+                        {!modoAlternativo && (
+                            <button
+                                onClick={() => setMarcado("blank")}
+                                className={`flex flex-col items-center justify-center rounded-2xl border-4 border-dashed p-8 min-h-[300px] transition ${
+                                    marcado === "blank"
+                                        ? "border-red-500 bg-red-50"
+                                        : "border-gray-300 bg-white hover:border-gray-400"
+                                }`}
+                            >
+                                <p className="font-extrabold text-lg uppercase text-gray-800">
+                                    Voto en Blanco
+                                </p>
+                                <p className="text-sm text-gray-500 mt-2">
+                                    Si no desea votar por ningún candidato
+                                </p>
+                            </button>
+                        )}
+                    </div>
                 </div>
             </section>
 
-            <footer className="bg-white border-t px-10 py-5 flex justify-end">
+            <footer className="bg-white border-t px-10 py-5 flex justify-between items-center">
+                <p className="text-xs text-gray-500">
+                    {modoAlternativo
+                        ? `Preferencias asignadas: ${candidatosRankeados} de ${candidatos.length}`
+                        : marcado !== null
+                          ? "Selección lista para revisar"
+                          : "Seleccione una opción para continuar"}
+                </p>
                 <button
-                    disabled={marcado === null}
-                    onClick={() => {
-                        if (marcado === "blank") onSeleccion(null);
-                        else
-                            onSeleccion(
-                                candidatos.find((c) => c.id === marcado) ?? null
-                            );
-                    }}
+                    disabled={!puedeAvanzar}
+                    onClick={handleRevisar}
                     className="flex items-center gap-3 bg-red-500 hover:bg-red-600 disabled:opacity-40 text-white font-extrabold uppercase tracking-wide px-10 py-5 rounded-2xl text-lg"
                 >
                     Revisar mi voto
@@ -355,16 +479,26 @@ function PantallaSeleccion({
 }
 
 function PantallaConfirmacion({
-    candidato,
+    seleccion,
     votante,
+    candidatos,
     onCancelar,
     onConfirmar,
 }: {
-    candidato: DeploymentCandidato | null;
+    seleccion: Seleccion;
     votante: DeploymentVotante;
+    candidatos: DeploymentCandidato[];
     onCancelar: () => void;
     onConfirmar: () => void;
 }) {
+    const esRanking = seleccion.tipo === "ranking";
+    const resumen =
+        seleccion.tipo === "candidato"
+            ? seleccion.candidato.nombre
+            : seleccion.tipo === "blanco"
+              ? BLANCO_LABEL
+              : null;
+
     return (
         <main className="min-h-screen flex flex-col items-center justify-center p-12 bg-white">
             <div className="max-w-2xl w-full bg-gray-50 rounded-3xl border p-10">
@@ -372,9 +506,7 @@ function PantallaConfirmacion({
                     <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
                         <AlertTriangle size={22} className="text-red-500" />
                     </div>
-                    <h1 className="text-3xl font-extrabold">
-                        Confirme su voto
-                    </h1>
+                    <h1 className="text-3xl font-extrabold">Confirme su voto</h1>
                 </div>
 
                 <p className="text-gray-500 text-sm mb-1">
@@ -382,17 +514,50 @@ function PantallaConfirmacion({
                     <strong className="text-gray-700">{votante.nombre}</strong>
                 </p>
 
+                {esRanking && (
+                    <div className="bg-blue-50 border border-blue-200 rounded-xl px-3 py-2 mt-3 mb-3 text-xs text-blue-700 font-semibold inline-flex items-center gap-2">
+                        <ListOrdered size={14} /> Voto Alternativo (ME-04)
+                    </div>
+                )}
+
                 <div className="border-y py-6 my-6 text-center">
                     <p className="text-xs uppercase tracking-wider text-gray-400 font-semibold">
                         Su selección
                     </p>
-                    <p className="text-4xl font-extrabold text-red-500 mt-2">
-                        {candidato ? candidato.nombre : BLANCO_LABEL}
-                    </p>
-                    {candidato?.partido && (
-                        <p className="text-sm text-gray-500 italic mt-1">
-                            {candidato.partido}
+                    {resumen && (
+                        <p className="text-4xl font-extrabold text-red-500 mt-2">
+                            {resumen}
                         </p>
+                    )}
+                    {seleccion.tipo === "candidato" &&
+                        seleccion.candidato.partido && (
+                            <p className="text-sm text-gray-500 italic mt-1">
+                                {seleccion.candidato.partido}
+                            </p>
+                        )}
+                    {seleccion.tipo === "ranking" && (
+                        <ol className="mt-3 space-y-2 inline-block text-left">
+                            {Object.entries(seleccion.ranking)
+                                .sort((a, b) => a[1] - b[1])
+                                .map(([id, n]) => {
+                                    const c = candidatos.find(
+                                        (x) => String(x.id) === id
+                                    );
+                                    return (
+                                        <li
+                                            key={id}
+                                            className="flex items-center gap-3 text-base"
+                                        >
+                                            <span className="w-7 h-7 rounded-full bg-red-500 text-white text-xs font-extrabold flex items-center justify-center">
+                                                {n}
+                                            </span>
+                                            <span className="font-semibold text-gray-900">
+                                                {c?.nombre ?? id}
+                                            </span>
+                                        </li>
+                                    );
+                                })}
+                        </ol>
                     )}
                 </div>
 
@@ -437,14 +602,15 @@ function PantallaEnviando() {
 
 function PantallaComprobante({
     numero,
-    candidato,
+    seleccion,
+    candidatos,
     onTerminar,
 }: {
     numero: string;
-    candidato: DeploymentCandidato | null;
+    seleccion: Seleccion;
+    candidatos: DeploymentCandidato[];
     onTerminar: () => void;
 }) {
-    // Auto-cierre a los 30 s para liberar la terminal.
     useEffect(() => {
         const t = setTimeout(onTerminar, 30_000);
         return () => clearTimeout(t);
@@ -469,10 +635,10 @@ function PantallaComprobante({
                 <p className="text-3xl font-mono font-extrabold text-red-500 mt-2 tracking-widest">
                     {numero}
                 </p>
-                <p className="text-xs text-gray-500 mt-3">
+                <p className="text-xs text-gray-500 mt-3 max-w-md">
                     Selección registrada:{" "}
                     <strong className="text-gray-700">
-                        {candidato ? candidato.nombre : BLANCO_LABEL}
+                        {labelSeleccion(seleccion, candidatos)}
                     </strong>
                 </p>
             </div>

@@ -9,8 +9,19 @@ import * as ed from "@noble/ed25519";
 import type { VotoPayload } from "../types/voto";
 
 function serializarCanonico(voto: VotoPayload): string {
+    // Keys ordenadas alfabéticamente para que firma y verificación produzcan
+    // el mismo bytestream sin importar el orden de inserción. Si hay
+    // preferencias (voto alternativo ME-04), también se ordenan internamente.
+    let prefsOrdenadas: Record<string, number> | undefined;
+    if (voto.preferencias && Object.keys(voto.preferencias).length > 0) {
+        prefsOrdenadas = {};
+        for (const k of Object.keys(voto.preferencias).sort()) {
+            prefsOrdenadas[k] = voto.preferencias[k];
+        }
+    }
     return JSON.stringify({
         candidato: voto.candidato,
+        ...(prefsOrdenadas ? { preferencias: prefsOrdenadas } : {}),
         terminal: voto.terminal,
         votante: voto.votante,
     });
