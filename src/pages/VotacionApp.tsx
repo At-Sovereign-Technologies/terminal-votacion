@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { useContextoListo } from "../config/TerminalContext";
 import { crearNodoClient, decodificarHandshakeDeQuery } from "../api/nodo.api";
+import { subscribirseAHandshakes } from "../api/sidecarClient";
 import { firmarVoto } from "../crypto/firmaVoto";
 import type { DeploymentCandidato, DeploymentVotante } from "../types/deployment";
 import type { HandshakePayload, VotoPayload } from "../types/voto";
@@ -59,16 +60,13 @@ export default function VotacionApp() {
         [config]
     );
 
-    // Capturamos handshake desde ?handshake=base64 al arrancar (modo dev).
-    // En prod real el handshake llega vía un endpoint HTTP local que
-    // empuja una nueva sesión; ese transporte se cablea cuando Augusto y
-    // Juan Eduardo definan el detalle.
-    useEffect(() => {
-        if (fase.kind !== "esperando") return;
-        const url = new URL(window.location.href);
-        const h = decodificarHandshakeDeQuery(url.searchParams.get("handshake"));
-        if (!h) return;
-
+    // Procesa un handshake entrante. Aplica tanto al modo legacy
+    // (query string ?handshake=...) como al sidecar (WebSocket).
+    const procesarHandshake = (h: HandshakePayload) => {
+        if (fase.kind !== "esperando") {
+            // Ya hay sesión activa; ignoramos handshakes adicionales.
+            return;
+        }
         const votante = terminal.votantes.find((v) => v.id === h.votanteId);
         if (!votante) {
             setFase({
@@ -78,11 +76,28 @@ export default function VotacionApp() {
             });
             return;
         }
-
         setFase({ kind: "seleccion", handshake: h, votante });
-        // Limpiamos el query para evitar reusar el mismo handshake si recarga.
+    };
+
+    // 1) Handshake desde query string al arrancar (modo dev legacy).
+    useEffect(() => {
+        if (fase.kind !== "esperando") return;
+        const url = new URL(window.location.href);
+        const h = decodificarHandshakeDeQuery(url.searchParams.get("handshake"));
+        if (!h) return;
+        procesarHandshake(h);
         url.searchParams.delete("handshake");
         window.history.replaceState({}, "", url.toString());
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [fase.kind, terminal.votantes]);
+
+    // 2) Sidecar HTTP local + WebSocket (transporte de dev y futuro empaque
+    //    Electron/Tauri). El SPA escucha eventos HANDSHAKE difundidos por
+    //    el sidecar cuando llega un POST /handshake en :8090.
+    useEffect(() => {
+        const sub = subscribirseAHandshakes((h) => procesarHandshake(h));
+        return () => sub.cerrar();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [fase.kind, terminal.votantes]);
 
     if (fase.kind === "esperando") {

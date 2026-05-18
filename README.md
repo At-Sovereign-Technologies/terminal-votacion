@@ -71,28 +71,63 @@ Nodo y URL del Jurado). Cada máquina del puesto tiene el suyo distinto.
 
 ## Desarrollo local
 
+### Opción A — SPA + sidecar end-to-end (recomendado)
+
 ```bash
 npm install
+npm run dev:all
+```
+
+Eso levanta dos procesos en paralelo:
+
+- **Vite** en `http://localhost:5173` — el SPA del votante.
+- **Sidecar** en `http://localhost:8090` (HTTP) + `ws://localhost:8091` (WebSocket).
+
+El sidecar es un proceso Node + Express + ws que **simula el transporte HTTP
+local** que en producción tendrá la Terminal de Jurado para empujar handshakes a
+esta Terminal de Votación. El SPA se conecta automáticamente al WebSocket del
+sidecar y recibe los handshakes en tiempo real.
+
+#### Probar el flujo end-to-end
+
+Con `npm run dev:all` corriendo, simula que el Jurado autoriza al votante 101:
+
+```bash
+curl -X POST http://localhost:8090/handshake \
+  -H "Content-Type: application/json" \
+  -d '{"votanteId":101,"sesionToken":"fake-jwt-dev"}'
+```
+
+El SPA en el navegador debe saltar inmediatamente de "Terminal en espera" a la
+pantalla del tarjetón con el votante asignado a esta terminal.
+
+### Opción B — Solo SPA (sin sidecar)
+
+```bash
 npm run dev
 ```
 
-Abre `http://localhost:5173`. La terminal cargará el `public/deployment.yml` y
-`public/terminal-config.json` de ejemplo y entrará en pantalla de espera.
-
-### Simular un handshake del jurado (dev)
-
-Mientras el Jurado aún no exista, puedes inyectar un handshake vía query string:
+Inyecta un handshake vía query string:
 
 ```bash
 node -e "console.log(encodeURIComponent(btoa(JSON.stringify({votanteId:101,sesionToken:'fake-jwt'}))))"
 ```
 
-Y abrir:
-```
-http://localhost:5173/?handshake=<resultado-anterior>
-```
+Abre `http://localhost:5173/?handshake=<resultado>`.
 
-Eso simula que el jurado autorizó al votante `101` para esta terminal.
+### Sobre el sidecar
+
+`sidecar/handshakeSidecar.ts` es Node + Express + ws. Cumple el rol que en
+producción tendría un launcher nativo (Electron, Tauri, o un binario empaquetado
+junto al SPA). El contrato del sidecar hacia el SPA es estable:
+
+- `POST http://localhost:8090/handshake` con `{ votanteId, sesionToken }`.
+- `ws://localhost:8091` emite `{ tipo: "HANDSHAKE", votanteId, sesionToken }` a
+  todos los SPA conectados.
+
+Cualquier implementación de transporte que respete ese contrato es reemplazo
+válido. La interfaz `subscribirseAHandshakes()` del SPA (`src/api/sidecarClient.ts`)
+no necesita cambiar.
 
 ## Flujo en vivo
 
