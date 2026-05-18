@@ -12,6 +12,17 @@ export interface NodoClient {
     consultarVotante(documento: string): Promise<RespuestaVotanteIdentidad>;
     emitirVoto(payload: VotoFirmado): Promise<void>;
     notificarJurado(parentUrl: string, evento: EventoJurado): Promise<void>;
+    consultarEstadoPuesto(): Promise<EstadoPuestoRespuesta>;
+}
+
+// Respuesta de GET /puesto (definido en docs/votacion-activa.md).
+// Solo nos importan los flags `activo` para el polling de revocación.
+export interface EstadoPuestoRespuesta {
+    punto: {
+        id: number;
+        activo: boolean;
+        terminales: Array<{ id: number; activo: boolean }>;
+    };
 }
 
 export interface EventoJurado {
@@ -60,6 +71,11 @@ export function crearNodoClient(opts: {
                     },
                 }
             );
+        },
+
+        async consultarEstadoPuesto() {
+            const r = await http.get<EstadoPuestoRespuesta>("/puesto");
+            return r.data;
         },
     };
 }
