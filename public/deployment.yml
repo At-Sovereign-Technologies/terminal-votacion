@@ -22,6 +22,10 @@ candidatos:
     partido: Coalición Gamma
     fotoUrl: ""
 
+# Mismo deployment que la terminal de jurado: en producción cada terminal
+# es una máquina física; en demo todos los votantes viven bajo Terminal #1
+# para poder probar con un solo sidecar.
+
 puntos:
   - id: 1
     nombre: Puesto Avenida Chile
@@ -47,11 +51,14 @@ puntos:
           - id: 102
             nombre: Sara Beltrán
             documento: "1020202020"
+          - id: 103
+            nombre: Camilo Salinas
+            documento: "1030303030"
+          - id: 104
+            nombre: Diana Rojas
+            documento: "1040404040"
       - id: 2
         secreto: "<jwt-de-terminal-2>"
         clavePublica: "302a300506032b65700321001122aabb..."
-        activo: true
-        votantes:
-          - id: 201
-            nombre: Camilo Salinas
-            documento: "1030303030"
+        activo: false
+        votantes: []
