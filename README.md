@@ -144,15 +144,25 @@ Jurado, espere".
   puede emitir si no hay conexión con el Jurado, pero la conexión se
   recupera sola en cuanto el Jurado vuelva.
 
+## Pruebas
+
+```bash
+npm test
+```
+
+Vitest corre los tests en `src/crypto/firmaVoto.test.ts`:
+
+- Firma y verifica un voto simple (round-trip con par Ed25519 conocido).
+- Rechaza la firma si se altera el candidato.
+- La serialización canónica del ranking es determinística e independiente
+  del orden de inserción en `preferencias`.
+- Alterar el ranking invalida la firma.
+- Voto en blanco (`candidato=0` sin preferencias) firma y verifica.
+
 ## Pendientes
 
 - **Verificación del `sesionToken` JWT.** Hoy el SPA acepta cualquier
   token no vacío. Cuando el formato del JWT del jurado quede definido, se
   valida firma + expiración antes de mostrar tarjetón.
-- **Polling de revocación al Jurado.** Si el Servidor Electoral revoca
-  esta terminal a mitad de jornada, el Jurado debería notificarlo por
-  WebSocket. Hoy solo se valida al arrancar.
-- **Pruebas unitarias.** Sin tests todavía. Pendiente cobertura de:
-  - Firma Ed25519 (round-trip con keys conocidas).
-  - Serialización canónica (ranking ordenado independiente del insert order).
-  - Cliente WebSocket con mock server (reconexión, timeout de voto).
+- **Pruebas del cliente WebSocket.** Falta cobertura con mock server
+  (reconexión automática, timeout de espera de respuesta del Jurado).
