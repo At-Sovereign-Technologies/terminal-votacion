@@ -74,12 +74,15 @@ del Jurado.
     "id": 1,
     "secreto": "<jwt-bearer-de-esta-terminal>",
     "clavePrivada": "<ed25519-hex-o-base64>",
-    "parentUrl": "http://terminal-jurado.local:8089"
+    "parentUrl": "ws://terminal-jurado.local:8090"
 }
 ```
 
-El `parentUrl` puede empezar con `http://` o `ws://`; el cliente lo convierte
-automáticamente a WebSocket.
+El `parentUrl` debe apuntar al puerto **WS Voto** del sidecar del Jurado
+(por defecto `:8090`), no a su HTTP. El cliente acepta también
+`wss://host:port` o `ws://host:port`. El sidecar expone tres puertos
+distintos: HTTP en `:8089` (consumido por el SPA del Jurado), WS de las
+Terminales Voto en `:8090`, y WS del SPA del Jurado en `:8087`.
 
 ## Desarrollo local
 
@@ -88,10 +91,10 @@ npm install
 npm run dev
 ```
 
-Vite arranca en `http://localhost:5173`. La terminal intentará conectarse al
-Jurado configurado en `terminal-config.json` (por defecto `localhost:8089`).
-Necesitas tener `terminal-jurado` corriendo en paralelo para que el flujo
-funcione.
+Vite arranca en `http://localhost:5173`. La terminal intentará conectarse
+al Jurado configurado en `terminal-config.json` (por defecto
+`ws://localhost:8090`). Necesitas tener `terminal-jurado` corriendo en
+paralelo para que el flujo funcione.
 
 ### Probar flujo end-to-end
 

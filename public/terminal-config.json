@@ -1,6 +1,6 @@
 {
     "id": 1,
-    "secreto": "PEGAR-AQUI-EL-JWT-DE-ESTA-TERMINAL",
-    "clavePrivada": "PEGAR-AQUI-LA-CLAVE-ED25519-EN-HEX-O-BASE64",
-    "parentUrl": "http://localhost:8089"
+    "secreto": "demo-terminal-1-secret",
+    "clavePrivada": "5c59ce3bbe3feca8f5cd4234aee0d2089188a728ee455017007b66f9df5c86d3",
+    "parentUrl": "ws://localhost:8090"
 }
