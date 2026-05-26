@@ -5,8 +5,7 @@ import {
     ChevronRight,
     ListOrdered,
     Loader2,
-    RotateCcw,
-    ShieldCheck,
+    ShieldCheck,   
 } from "lucide-react";
 import { useContextoListo } from "../config/TerminalContext";
 import { crearJuradoClient } from "../api/juradoClient";
@@ -489,7 +488,7 @@ function PantallaSeleccion({
     // Modo simple: un candidato O voto en blanco.
     const [marcado, setMarcado] = useState<number | "blank" | null>(null);
     // Modo alternativo (ME-04): mapa candidatoId -> preferencia (1..N).
-    const [modoAlternativo, setModoAlternativo] = useState(false);
+    const [modoAlternativo] = useState(false);
     const [ranking, setRanking] = useState<Record<string, number>>({});
 
     const candidatosRankeados = Object.keys(ranking).length;
@@ -508,12 +507,6 @@ function PantallaSeleccion({
             }
             return { ...prev, [candidatoId]: Object.keys(prev).length + 1 };
         });
-    };
-
-    const cambiarModo = (alternativo: boolean) => {
-        setModoAlternativo(alternativo);
-        setMarcado(null);
-        setRanking({});
     };
 
     const handleRevisar = () => {
