@@ -11,8 +11,16 @@ import {
 import { useContextoListo } from "../config/TerminalContext";
 import { crearJuradoClient } from "../api/juradoClient";
 import type { EstadoConexion, JuradoClient } from "../api/juradoClient";
+import {
+    consultarTerminalesDisponibles,
+    type TerminalDisponible,
+} from "../api/terminalesSidecar.api";
 import { firmarVoto } from "../crypto/firmaVoto";
-import type { DeploymentCandidato, DeploymentVotante } from "../types/deployment";
+import type {
+    DeploymentCandidato,
+    DeploymentTerminal,
+    DeploymentVotante,
+} from "../types/deployment";
 import type { HandshakePayload, VotoPayload } from "../types/voto";
 
 // Una selección puede ser candidato único, voto en blanco, o ranking alternativo.
@@ -58,7 +66,11 @@ function labelSeleccion(s: Seleccion, candidatos: DeploymentCandidato[]): string
 }
 
 export default function VotacionApp() {
-    const { deployment, config, terminal } = useContextoListo();
+    const { deployment, config, punto } = useContextoListo();
+    const [terminalSeleccionada, setTerminalSeleccionada] = useState<DeploymentTerminal | null>(null);
+    const [terminalesDisponibles, setTerminalesDisponibles] = useState<TerminalDisponible[]>([]);
+    const [cargandoTerminales, setCargandoTerminales] = useState(true);
+    const [errorTerminales, setErrorTerminales] = useState<string | null>(null);
     const [fase, setFase] = useState<Fase>({ kind: "esperando" });
     const [estadoConexion, setEstadoConexion] =
         useState<EstadoConexion>("conectando");
@@ -70,17 +82,36 @@ export default function VotacionApp() {
     faseRef.current = fase;
 
     useEffect(() => {
+        setCargandoTerminales(true);
+        setErrorTerminales(null);
+
+        consultarTerminalesDisponibles(config.parentUrl)
+            .then((terminales) => setTerminalesDisponibles(terminales))
+            .catch((e) => {
+                const mensaje =
+                    e instanceof Error
+                        ? e.message
+                        : "No se pudo consultar disponibilidad de terminales.";
+                setErrorTerminales(mensaje);
+            })
+            .finally(() => setCargandoTerminales(false));
+    }, [config.parentUrl]);
+
+    useEffect(() => {
+        if (!terminalSeleccionada) return;
+
+        const secretoSeleccionado = terminalSeleccionada.secreto || config.secreto;
         const cliente = crearJuradoClient({
             parentUrl: config.parentUrl,
-            terminalId: terminal.id,
-            secreto: config.secreto,
+            terminalId: terminalSeleccionada.id,
+            secreto: secretoSeleccionado,
             onCambioEstado: setEstadoConexion,
             onHandshake: (h) => {
                 if (faseRef.current.kind !== "esperando") {
                     // Ignorar handshakes que llegan cuando ya hay sesión activa.
                     return;
                 }
-                const votante = terminal.votantes.find(
+                const votante = terminalSeleccionada.votantes.find(
                     (v) => v.id === h.votanteId
                 );
                 if (!votante) {
@@ -102,10 +133,60 @@ export default function VotacionApp() {
         // Solo nos volvemos a conectar si cambia la config (no debería pasar
         // en runtime). El callback usa faseRef para mantenerse actual.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [config.parentUrl, config.secreto, terminal.id]);
+    }, [config.parentUrl, config.secreto, terminalSeleccionada]);
+
+    if (!terminalSeleccionada) {
+        return (
+            <PantallaSeleccionTerminal
+                terminales={punto.terminales}
+                terminalesDisponibles={terminalesDisponibles}
+                cargando={cargandoTerminales}
+                error={errorTerminales}
+                onReintentar={() => {
+                    setCargandoTerminales(true);
+                    setErrorTerminales(null);
+                    consultarTerminalesDisponibles(config.parentUrl)
+                        .then((terminales) => setTerminalesDisponibles(terminales))
+                        .catch((e) => {
+                            const mensaje =
+                                e instanceof Error
+                                    ? e.message
+                                    : "No se pudo consultar disponibilidad de terminales.";
+                            setErrorTerminales(mensaje);
+                        })
+                        .finally(() => setCargandoTerminales(false));
+                }}
+                onSeleccionar={(terminalId) => {
+                    const elegida = punto.terminales.find((t) => t.id === terminalId);
+                    if (!elegida) {
+                        setErrorTerminales(`Terminal #${terminalId} no encontrada en deployment.`);
+                        return;
+                    }
+                    if (!elegida.activo) {
+                        setErrorTerminales(`Terminal #${terminalId} está marcada como inactiva.`);
+                        return;
+                    }
+                    setTerminalSeleccionada(elegida);
+                    setFase({ kind: "esperando" });
+                }}
+            />
+        );
+    }
 
     if (fase.kind === "esperando")
-        return <PantallaEsperando estadoConexion={estadoConexion} />;
+        return (
+            <PantallaEsperando
+                estadoConexion={estadoConexion}
+                terminalId={terminalSeleccionada.id}
+                onCambiarTerminal={() => {
+                    clienteRef.current?.cerrar();
+                    clienteRef.current = null;
+                    setTerminalSeleccionada(null);
+                    setEstadoConexion("conectando");
+                    setFase({ kind: "esperando" });
+                }}
+            />
+        );
     if (fase.kind === "error")
         return (
             <PantallaError
@@ -149,7 +230,7 @@ export default function VotacionApp() {
             }
             try {
                 const payload: VotoPayload = construirPayload(
-                    terminal.id,
+                    terminalSeleccionada.id,
                     fase.votante.id,
                     fase.seleccion
                 );
@@ -238,10 +319,98 @@ function construirPayload(
 
 // ─── Pantallas ──────────────────────────────────────────────────────────────
 
+function PantallaSeleccionTerminal({
+    terminales,
+    terminalesDisponibles,
+    cargando,
+    error,
+    onSeleccionar,
+    onReintentar,
+}: {
+    terminales: DeploymentTerminal[];
+    terminalesDisponibles: TerminalDisponible[];
+    cargando: boolean;
+    error: string | null;
+    onSeleccionar: (terminalId: number) => void;
+    onReintentar: () => void;
+}) {
+    const disponibilidadPorId = new Map(
+        terminalesDisponibles.map((t) => [t.id, t])
+    );
+
+    return (
+        <main className="min-h-screen flex flex-col items-center justify-center p-8 bg-white">
+            <div className="w-full max-w-3xl border rounded-2xl p-6 bg-gray-50">
+                <h1 className="text-3xl font-extrabold text-gray-900">
+                    Seleccione terminal de votación
+                </h1>
+                <p className="text-sm text-gray-600 mt-2">
+                    Antes de abrir la sesión, elija una terminal disponible para conectar al sidecar.
+                </p>
+
+                {cargando && (
+                    <div className="mt-6 flex items-center gap-3 text-sm text-gray-500">
+                        <Loader2 size={18} className="animate-spin" />
+                        Consultando disponibilidad en el sidecar...
+                    </div>
+                )}
+
+                {!!error && (
+                    <div className="mt-6 border border-red-200 bg-red-50 rounded-xl p-4">
+                        <p className="text-sm text-red-700">{error}</p>
+                        <button
+                            onClick={onReintentar}
+                            className="mt-3 bg-red-500 hover:bg-red-600 text-white font-bold uppercase tracking-wide px-4 py-2 rounded-lg text-xs"
+                        >
+                            Reintentar
+                        </button>
+                    </div>
+                )}
+
+                <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {terminales.map((terminal) => {
+                        const d = disponibilidadPorId.get(terminal.id);
+                        const activa = terminal.activo;
+                        const disponible = d ? d.disponible : activa;
+                        const conectada = d ? d.conectada : false;
+
+                        return (
+                            <button
+                                key={terminal.id}
+                                onClick={() => onSeleccionar(terminal.id)}
+                                disabled={!disponible}
+                                className={`text-left border rounded-xl p-4 transition ${
+                                    disponible
+                                        ? "border-gray-200 bg-white hover:border-red-300"
+                                        : "border-gray-200 bg-gray-100 text-gray-400 cursor-not-allowed"
+                                }`}
+                            >
+                                <p className="text-xs text-gray-500 uppercase tracking-wide">
+                                    Terminal #{terminal.id}
+                                </p>
+                                <p className="text-sm mt-1">
+                                    Estado: {activa ? (disponible ? "disponible" : conectada ? "ocupada" : "no disponible") : "inactiva"}
+                                </p>
+                                <p className="text-xs mt-1 text-gray-500">
+                                    Votantes asignados: {terminal.votantes.length}
+                                </p>
+                            </button>
+                        );
+                    })}
+                </div>
+            </div>
+        </main>
+    );
+}
+
 function PantallaEsperando({
     estadoConexion,
+    terminalId,
+    onCambiarTerminal,
 }: {
     estadoConexion: EstadoConexion;
+    terminalId: number;
+    onCambiarTerminal: () => void;
 }) {
     return (
         <main className="min-h-screen flex flex-col items-center justify-center p-12 text-center bg-white">
@@ -251,6 +420,7 @@ function PantallaEsperando({
             <h1 className="text-4xl font-extrabold text-gray-900">
                 Terminal en espera
             </h1>
+            <p className="mt-2 text-sm text-gray-600">Terminal activa: #{terminalId}</p>
             <p className="text-lg text-gray-500 mt-3 max-w-md">
                 Acérquese al jurado para identificar al votante. La terminal
                 quedará habilitada en cuanto el jurado autorice la sesión.
@@ -270,6 +440,12 @@ function PantallaEsperando({
                     {estadoConexion}
                 </span>
             </p>
+            <button
+                onClick={onCambiarTerminal}
+                className="mt-8 border border-gray-300 hover:border-gray-400 text-gray-700 font-bold uppercase tracking-wide px-6 py-3 rounded-xl text-xs"
+            >
+                Cambiar terminal
+            </button>
         </main>
     );
 }
@@ -373,48 +549,6 @@ function PantallaSeleccion({
 
             <section className="flex-1 px-10 py-6 overflow-y-auto">
                 <div className="max-w-6xl mx-auto">
-                    <div className="bg-white border rounded-2xl px-5 py-4 mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                        <div className="flex items-start gap-3">
-                            <div className="w-9 h-9 rounded-full bg-red-50 flex items-center justify-center shrink-0">
-                                <ListOrdered size={16} className="text-red-500" />
-                            </div>
-                            <div>
-                                <p className="font-bold text-sm">
-                                    {modoAlternativo
-                                        ? "Voto Alternativo activo (ME-04)"
-                                        : "Voto único"}
-                                </p>
-                                <p className="text-xs text-gray-500">
-                                    {modoAlternativo
-                                        ? "Toque candidatos en orden de preferencia (1°, 2°, 3°…). Re-tocar quita la marca."
-                                        : "Seleccione un único candidato o el voto en blanco."}
-                                </p>
-                            </div>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                            {modoAlternativo && candidatosRankeados > 0 && (
-                                <button
-                                    onClick={() => setRanking({})}
-                                    className="flex items-center gap-1 border rounded-lg px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
-                                >
-                                    <RotateCcw size={12} /> Limpiar
-                                </button>
-                            )}
-                            <button
-                                onClick={() => cambiarModo(!modoAlternativo)}
-                                className={`text-xs font-bold uppercase tracking-wide px-4 py-2 rounded-lg ${
-                                    modoAlternativo
-                                        ? "bg-gray-800 text-white hover:bg-gray-900"
-                                        : "bg-red-500 text-white hover:bg-red-600"
-                                }`}
-                            >
-                                {modoAlternativo
-                                    ? "Volver a voto único"
-                                    : "Activar voto alternativo"}
-                            </button>
-                        </div>
-                    </div>
-
                     <div className="grid grid-cols-2 lg:grid-cols-3 gap-6">
                         {candidatos.map((c) => {
                             const rank = modoAlternativo

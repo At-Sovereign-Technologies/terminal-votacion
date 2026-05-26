@@ -19,8 +19,17 @@ import type {
     TerminalConfig,
 } from "../types/deployment";
 
-const DEPLOYMENT_PATH = "/deployment.yml";
-const CONFIG_PATH = "/terminal-config.json";
+const ENV = import.meta.env as unknown as {
+    VITE_DEPLOYMENT_PATH?: string;
+    VITE_TERMINAL_CONFIG_PATH?: string;
+    VITE_TERMINAL_ID?: string;
+    VITE_TERMINAL_SECRETO?: string;
+    VITE_TERMINAL_CLAVE_PRIVADA?: string;
+    VITE_PARENT_URL?: string;
+};
+
+const DEPLOYMENT_PATH = ENV.VITE_DEPLOYMENT_PATH?.trim() || "/deployment.yml";
+const CONFIG_PATH = ENV.VITE_TERMINAL_CONFIG_PATH?.trim() || "/terminal-config.json";
 
 export interface ContextoTerminal {
     deployment: Deployment;
@@ -48,10 +57,28 @@ async function fetchTexto(path: string): Promise<string> {
     return r.text();
 }
 
+async function fetchTextoOpcional(path: string): Promise<string | null> {
+    try {
+        return await fetchTexto(path);
+    } catch {
+        return null;
+    }
+}
+
+function construirConfigDesdeEnv(base?: TerminalConfig): TerminalConfig {
+    const id = Number(ENV.VITE_TERMINAL_ID ?? base?.id ?? 0);
+    return {
+        id,
+        secreto: ENV.VITE_TERMINAL_SECRETO?.trim() || base?.secreto || "",
+        clavePrivada: ENV.VITE_TERMINAL_CLAVE_PRIVADA?.trim() || base?.clavePrivada || "",
+        parentUrl: ENV.VITE_PARENT_URL?.trim() || base?.parentUrl || "",
+    };
+}
+
 export async function cargarContextoTerminal(): Promise<ContextoTerminal> {
     const [yamlTexto, configTexto] = await Promise.all([
         fetchTexto(DEPLOYMENT_PATH),
-        fetchTexto(CONFIG_PATH),
+        fetchTextoOpcional(CONFIG_PATH),
     ]);
 
     let deployment: Deployment;
@@ -63,19 +90,23 @@ export async function cargarContextoTerminal(): Promise<ContextoTerminal> {
         );
     }
 
-    let config: TerminalConfig;
-    try {
-        config = JSON.parse(configTexto) as TerminalConfig;
-    } catch (e) {
-        throw new ErrorConfiguracion(
-            `terminal-config.json mal formado: ${e instanceof Error ? e.message : String(e)}`
-        );
+    let configBase: TerminalConfig | undefined;
+    if (configTexto) {
+        try {
+            configBase = JSON.parse(configTexto) as TerminalConfig;
+        } catch (e) {
+            throw new ErrorConfiguracion(
+                `terminal-config.json mal formado: ${e instanceof Error ? e.message : String(e)}`
+            );
+        }
     }
+
+    const config = construirConfigDesdeEnv(configBase);
 
     // Validaciones mínimas.
     if (!config.id || !config.secreto || !config.clavePrivada || !config.parentUrl) {
         throw new ErrorConfiguracion(
-            "terminal-config.json incompleto: faltan id, secreto, clavePrivada o parentUrl."
+            "Configuración incompleta: faltan id, secreto, clavePrivada o parentUrl (env o terminal-config.json)."
         );
     }
     if (!deployment.puntos?.length) {

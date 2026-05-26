@@ -22,9 +22,7 @@ candidatos:
     partido: Coalición Gamma
     fotoUrl: ""
 
-# Mismo deployment que la terminal de jurado: en producción cada terminal
-# es una máquina física; en demo todos los votantes viven bajo Terminal #1
-# para poder probar con un solo sidecar.
+# Mismo deployment que la terminal de jurado: modelo "cada mesa = una terminal".
 
 puntos:
   - id: 1
@@ -48,12 +46,27 @@ puntos:
           - id: 101
             nombre: Andrés Mora
             documento: "1010101010"
+      - id: 2
+        secreto: "demo-terminal-2-secret"
+        clavePublica: "ac5eff87b69c511c6fbae77e127de867aca6756711ce15f0c8df0f42e911b14a"
+        activo: true
+        votantes:
           - id: 102
             nombre: Sara Beltrán
             documento: "1020202020"
+      - id: 3
+        secreto: "demo-terminal-3-secret"
+        clavePublica: "ac5eff87b69c511c6fbae77e127de867aca6756711ce15f0c8df0f42e911b14a"
+        activo: true
+        votantes:
           - id: 103
             nombre: Camilo Salinas
             documento: "1030303030"
+      - id: 4
+        secreto: "demo-terminal-4-secret"
+        clavePublica: "ac5eff87b69c511c6fbae77e127de867aca6756711ce15f0c8df0f42e911b14a"
+        activo: true
+        votantes:
           - id: 104
             nombre: Diana Rojas
             documento: "1040404040"
