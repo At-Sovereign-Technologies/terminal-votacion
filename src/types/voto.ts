@@ -34,5 +34,5 @@ export type MensajeJurado =
     | { tipo: "VOTO_RECHAZADO"; motivo: string };
 
 export type MensajeVoto =
-    | { tipo: "HELLO"; terminalId: number; secreto: string }
+    | { tipo: "HELLO"; terminalId: number; secreto: string; jwt?: string }
     | { tipo: "VOTO"; payload: VotoFirmado };

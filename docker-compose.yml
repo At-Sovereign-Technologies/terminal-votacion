@@ -1,0 +1,15 @@
+services:
+  terminal-votacion:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_TERMINAL_CONFIG_PATH: ${VITE_TERMINAL_CONFIG_PATH:-/terminal-config.json}
+        VITE_TERMINAL_ID: ${VITE_TERMINAL_ID:-}
+        VITE_TERMINAL_SECRETO: ${VITE_TERMINAL_SECRETO:-}
+        VITE_TERMINAL_JWT: ${VITE_TERMINAL_JWT:-}
+        VITE_TERMINAL_CLAVE_PRIVADA: ${VITE_TERMINAL_CLAVE_PRIVADA:-}
+        VITE_PARENT_URL: ${VITE_PARENT_URL:-}
+        VITE_SIDECAR_URL: ${VITE_SIDECAR_URL:-}
+    ports:
+      - "5173:80"

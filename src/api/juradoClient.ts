@@ -32,8 +32,13 @@ export interface OpcionesCliente {
     parentUrl: string; // http://host:port o ws://host:port
     terminalId: number;
     secreto: string;
+    jwt?: string;
     onHandshake: (h: HandshakePayload) => void;
     onCambioEstado?: (e: EstadoConexion) => void;
+}
+
+function pareceJwt(raw: string): boolean {
+    return /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(raw.trim());
 }
 
 function urlAWebSocket(raw: string): string {
@@ -73,10 +78,12 @@ export function crearJuradoClient(opts: OpcionesCliente): JuradoClient {
         ws.addEventListener("open", () => {
             cambiarEstado("abierto");
             // Identificarnos ante el Jurado para que sepa qué terminal somos.
+            const jwtHello = opts.jwt?.trim() || (pareceJwt(opts.secreto) ? opts.secreto : undefined);
             enviar({
                 tipo: "HELLO",
                 terminalId: opts.terminalId,
                 secreto: opts.secreto,
+                ...(jwtHello ? { jwt: jwtHello } : {}),
             });
         });
 

@@ -105,6 +105,7 @@ export default function VotacionApp() {
             parentUrl: config.parentUrl,
             terminalId: terminalSeleccionada.id,
             secreto: secretoSeleccionado,
+            jwt: config.jwt,
             onCambioEstado: setEstadoConexion,
             onHandshake: (h) => {
                 if (faseRef.current.kind !== "esperando") {

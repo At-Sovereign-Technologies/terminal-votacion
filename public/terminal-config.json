@@ -1,6 +1,6 @@
 {
     "id": 1,
-    "secreto": "demo-terminal-1-secret",
+    "secreto": "757bcac9-8111-4533-acc9-6903c4f7bf55",
     "clavePrivada": "5c59ce3bbe3feca8f5cd4234aee0d2089188a728ee455017007b66f9df5c86d3",
     "parentUrl": "ws://localhost:8090"
 }

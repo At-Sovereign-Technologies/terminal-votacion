@@ -1,17 +1,7 @@
-// Lee el deployment.yml y terminal-config.json al arrancar la terminal.
-// Espejo del modelo de despliegue del proyecto: el Servidor Electoral
-// genera estos archivos antes de la jornada y se distribuyen junto al SPA.
-//
-// Estrategia de carga:
-//   - Ambos archivos se publican como assets estáticos en `/public/`.
-//   - La terminal los descarga al arranque con fetch.
-//   - Si alguno falta o está malformado, la terminal entra en modo "ERROR" y
-//     no permite votar.
-//
-// PROD: el operador del puesto reemplaza los placeholders de `/public/`
-// con los archivos reales generados por el Servidor Electoral.
+// Carga configuración de runtime desde:
+//  1) terminal-config.json (o variables VITE_*) para datos locales de la terminal.
+//  2) /puesto del sidecar, cuya fuente de verdad es active-voting-service.
 
-import { parse as parseYaml } from "yaml";
 import type {
     Deployment,
     DeploymentPunto,
@@ -20,16 +10,48 @@ import type {
 } from "../types/deployment";
 
 const ENV = import.meta.env as unknown as {
-    VITE_DEPLOYMENT_PATH?: string;
     VITE_TERMINAL_CONFIG_PATH?: string;
     VITE_TERMINAL_ID?: string;
     VITE_TERMINAL_SECRETO?: string;
+    VITE_TERMINAL_JWT?: string;
     VITE_TERMINAL_CLAVE_PRIVADA?: string;
     VITE_PARENT_URL?: string;
+    VITE_SIDECAR_URL?: string;
 };
 
-const DEPLOYMENT_PATH = ENV.VITE_DEPLOYMENT_PATH?.trim() || "/deployment.yml";
 const CONFIG_PATH = ENV.VITE_TERMINAL_CONFIG_PATH?.trim() || "/terminal-config.json";
+
+interface PuestoApiResponse {
+    eleccion?: {
+        id?: number;
+        nombre?: string;
+        tipo_eleccion?: "presidencial" | "legislativa" | "territorial";
+        fecha_inicio?: number;
+        fecha_fin?: number;
+    };
+    candidatos?: Array<{
+        id?: number;
+        nombre?: string;
+        documento?: string;
+        partido?: string;
+        foto_url?: string;
+    }>;
+    punto?: {
+        id?: number;
+        nombre?: string;
+        latitud?: number;
+        longitud?: number;
+        terminales?: Array<{
+            id?: number;
+            activo?: boolean;
+            votantes?: Array<{
+                id?: number;
+                nombre?: string;
+                documento?: string;
+            }>;
+        }>;
+    };
+}
 
 export interface ContextoTerminal {
     deployment: Deployment;
@@ -70,30 +92,121 @@ function construirConfigDesdeEnv(base?: TerminalConfig): TerminalConfig {
     return {
         id,
         secreto: ENV.VITE_TERMINAL_SECRETO?.trim() || base?.secreto || "",
+        jwt: ENV.VITE_TERMINAL_JWT?.trim() || base?.jwt || "",
         clavePrivada: ENV.VITE_TERMINAL_CLAVE_PRIVADA?.trim() || base?.clavePrivada || "",
         parentUrl: ENV.VITE_PARENT_URL?.trim() || base?.parentUrl || "",
     };
 }
 
-export async function cargarContextoTerminal(): Promise<ContextoTerminal> {
-    const [yamlTexto, configTexto] = await Promise.all([
-        fetchTexto(DEPLOYMENT_PATH),
-        fetchTextoOpcional(CONFIG_PATH),
-    ]);
+interface TerminalConfigRaw {
+    id?: number | string;
+    secreto?: string;
+    jwt?: string;
+    clavePrivada?: string;
+    clave_privada?: string;
+    parentUrl?: string;
+    parent_url?: string;
+    cluster_url?: string;
+}
 
-    let deployment: Deployment;
+function mapearConfigRaw(raw: TerminalConfigRaw): TerminalConfig {
+    return {
+        id: Number(raw.id ?? 0),
+        secreto: String(raw.secreto ?? "").trim(),
+        jwt: String(raw.jwt ?? "").trim(),
+        clavePrivada: String(raw.clavePrivada ?? raw.clave_privada ?? "").trim(),
+        // Compatibilidad de formatos: parentUrl (actual), parent_url y cluster_url.
+        parentUrl: String(raw.parentUrl ?? raw.parent_url ?? raw.cluster_url ?? "").trim(),
+    };
+}
+
+function parentUrlAHttp(raw: string): string {
+    const httpBase = raw
+        .replace(/^ws:\/\//i, "http://")
+        .replace(/^wss:\/\//i, "https://")
+        .replace(/\/$/, "");
+
     try {
-        deployment = parseYaml(yamlTexto) as Deployment;
-    } catch (e) {
+        const u = new URL(httpBase);
+        if (u.port === "8090") u.port = "8089";
+        return u.toString().replace(/\/$/, "");
+    } catch {
+        return httpBase;
+    }
+}
+
+async function fetchPuesto(config: TerminalConfig): Promise<PuestoApiResponse> {
+    const sidecarBase =
+        ENV.VITE_SIDECAR_URL?.trim() || parentUrlAHttp(config.parentUrl);
+    const r = await fetch(`${sidecarBase}/puesto`, { cache: "no-store" });
+    if (!r.ok) {
         throw new ErrorConfiguracion(
-            `deployment.yml mal formado: ${e instanceof Error ? e.message : String(e)}`
+            `No se pudo cargar /puesto del sidecar (HTTP ${r.status}).`
         );
     }
+    const data = (await r.json().catch(() => null)) as PuestoApiResponse | null;
+    if (!data || typeof data !== "object") {
+        throw new ErrorConfiguracion("Respuesta inválida en GET /puesto.");
+    }
+    return data;
+}
+
+function mapearPuestoApiADeployment(api: PuestoApiResponse): Deployment {
+    const eleccion = api.eleccion;
+    const punto = api.punto;
+
+    if (!eleccion || !punto) {
+        throw new ErrorConfiguracion(
+            "GET /puesto incompleto: faltan eleccion o punto."
+        );
+    }
+
+    return {
+        eleccion: {
+            id: Number(eleccion.id ?? 1),
+            nombre: String(eleccion.nombre ?? ""),
+            tipoEleccion: eleccion.tipo_eleccion ?? "presidencial",
+            fechaInicio: Number(eleccion.fecha_inicio ?? 0),
+            fechaFin: Number(eleccion.fecha_fin ?? 0),
+        },
+        candidatos: (api.candidatos ?? []).map((c) => ({
+            id: Number(c.id ?? 0),
+            nombre: String(c.nombre ?? ""),
+            documento: String(c.documento ?? ""),
+            partido: String(c.partido ?? ""),
+            fotoUrl: c.foto_url,
+        })),
+        puntos: [
+            {
+                id: Number(punto.id ?? 1),
+                nombre: String(punto.nombre ?? ""),
+                latitud: Number(punto.latitud ?? 0),
+                longitud: Number(punto.longitud ?? 0),
+                activo: true,
+                jurados: [],
+                terminales: (punto.terminales ?? []).map((t) => ({
+                    id: Number(t.id ?? 0),
+                    secreto: "",
+                    clavePublica: "",
+                    activo: t.activo !== false,
+                    votantes: (t.votantes ?? []).map((v) => ({
+                        id: Number(v.id ?? 0),
+                        nombre: String(v.nombre ?? ""),
+                        documento: String(v.documento ?? ""),
+                    })),
+                })),
+            },
+        ],
+    };
+}
+
+export async function cargarContextoTerminal(): Promise<ContextoTerminal> {
+    const configTexto = await fetchTextoOpcional(CONFIG_PATH);
 
     let configBase: TerminalConfig | undefined;
     if (configTexto) {
         try {
-            configBase = JSON.parse(configTexto) as TerminalConfig;
+            configBase = mapearConfigRaw(JSON.parse(configTexto) as TerminalConfigRaw);
         } catch (e) {
             throw new ErrorConfiguracion(
                 `terminal-config.json mal formado: ${e instanceof Error ? e.message : String(e)}`
@@ -103,6 +216,16 @@ export async function cargarContextoTerminal(): Promise<ContextoTerminal> {
 
     const config = construirConfigDesdeEnv(configBase);
 
+    let deployment: Deployment;
+    try {
+        const puestoApi = await fetchPuesto(config);
+        deployment = mapearPuestoApiADeployment(puestoApi);
+    } catch (e) {
+        throw new ErrorConfiguracion(
+            e instanceof Error ? e.message : "No se pudo cargar configuración desde sidecar."
+        );
+    }
+
     // Validaciones mínimas.
     if (!config.id || !config.secreto || !config.clavePrivada || !config.parentUrl) {
         throw new ErrorConfiguracion(
@@ -110,7 +233,7 @@ export async function cargarContextoTerminal(): Promise<ContextoTerminal> {
         );
     }
     if (!deployment.puntos?.length) {
-        throw new ErrorConfiguracion("deployment.yml no contiene puntos.");
+        throw new ErrorConfiguracion("/puesto no contiene puntos.");
     }
 
     // Filtrar la información que corresponde a esta terminal específica.
@@ -127,7 +250,7 @@ export async function cargarContextoTerminal(): Promise<ContextoTerminal> {
 
     if (!puntoEncontrado || !terminalEncontrada) {
         throw new ErrorConfiguracion(
-            `Terminal id=${config.id} no encontrada en deployment.yml.`
+            `Terminal id=${config.id} no encontrada en /puesto.`
         );
     }
 

@@ -71,6 +71,7 @@ export interface Deployment {
 export interface TerminalConfig {
     id: number;
     secreto: string; // JWT bearer para identificarse ante el Jurado.
+    jwt?: string; // JWT explícito para sidecar/nodo cuando aplique.
     clavePrivada: string; // Ed25519, hex o base64. Nunca se serializa hacia afuera.
     parentUrl: string; // URL del Jurado (acepta http://host:port o ws://host:port).
 }
