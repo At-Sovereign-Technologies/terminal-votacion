@@ -630,7 +630,7 @@ function PantallaComprobante({
             </p>
             <div className="mt-8 bg-gray-50 border rounded-2xl px-8 py-5">
                 <p className="text-xs uppercase tracking-wider text-gray-400 font-semibold">
-                    Comprobante
+                    Tarjeton
                 </p>
                 <p className="text-3xl font-mono font-extrabold text-red-500 mt-2 tracking-widest">
                     {numero}
