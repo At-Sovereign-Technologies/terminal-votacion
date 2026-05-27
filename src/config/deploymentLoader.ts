@@ -88,7 +88,7 @@ async function fetchTextoOpcional(path: string): Promise<string | null> {
 }
 
 function construirConfigDesdeEnv(base?: TerminalConfig): TerminalConfig {
-    const id = Number(ENV.VITE_TERMINAL_ID ?? base?.id ?? 0);
+    const id = Number(ENV.VITE_TERMINAL_ID?.trim() || base?.id || 0);
     return {
         id,
         secreto: ENV.VITE_TERMINAL_SECRETO?.trim() || base?.secreto || "",
